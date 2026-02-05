@@ -1,4 +1,4 @@
-Prometheus Metrics Collector for Tado X
+Prometheus Metrics Exporter for Tado X
 
 Useful resources:
 - https://help.tado.com/en/collections/15124268-rest-api
@@ -10,3 +10,5 @@ Currently supports:
   - Current temperature
   - Current humidity
   - Heating Power
+
+Publishes metrics on http://127.0.0.1:8005/metrics
