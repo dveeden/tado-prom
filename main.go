@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"slices"
 
 	"golang.org/x/oauth2"
 )
@@ -80,6 +81,10 @@ func (t *Tado) Authenticate() error {
 }
 
 func (t *Tado) Metrics(w http.ResponseWriter, req *http.Request) {
+	if t.client == nil {
+		return
+	}
+
 	if len(t.homeids) == 0 {
 		resp, err := t.client.Get("https://my.tado.com/api/v2/me")
 		if err != nil {
@@ -91,6 +96,9 @@ func (t *Tado) Metrics(w http.ResponseWriter, req *http.Request) {
 			panic(err)
 		}
 		for _, home := range me.Homes {
+			if slices.Contains(t.homeids, home.Id) {
+				return
+			}
 			t.homeids = append(t.homeids, home.Id)
 		}
 		resp.Body.Close()
