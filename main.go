@@ -1,16 +1,34 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"slices"
-
-	"golang.org/x/oauth2"
+	"time"
 )
+
+type TadoDevAuth struct {
+	DeviceCode              string `json:"device_code"`
+	ExpiresIn               int    `json:"expires_in"`
+	Interval                int    `json:"interval"`
+	UserCode                string `json:"user_code"`
+	VerificationUrl         string `json:"verification_uri"`
+	VerificationUrlComplete string `json:"verification_uri_complete"`
+}
+
+type TadoToken struct {
+	AccessToken  string    `json:"access_token"`
+	ExpiresIn    int       `json:"expires_in"`
+	RefreshToken string    `json:"refresh_token"`
+	Scope        string    `json:"scope"`
+	Tokentype    string    `json:"token_type"`
+	UserId       string    `json:"userId"`
+	Expiry       time.Time `json:"expiry"`
+}
 
 type TadoHome struct {
 	Id   uint   `json:"id"`
@@ -54,39 +72,90 @@ type TadoRoom struct {
 }
 
 type Tado struct {
-	config  *oauth2.Config
 	client  *http.Client
 	homeids []uint
+	token   TadoToken
+}
+
+func NewTado() *Tado {
+	return &Tado{
+		client: &http.Client{},
+	}
 }
 
 func (t *Tado) Authenticate() error {
-	ctx := context.Background()
-
-	response, err := t.config.DeviceAuth(ctx)
+	resp, err := t.client.PostForm("https://login.tado.com/oauth2/device_authorize",
+		url.Values{
+			"client_id": {"1bb50063-6b0c-4d11-bd99-387f4a91cc46"},
+			"scope":     {"offline_access"},
+		})
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Now go to %s\n", response.VerificationURIComplete)
-
+	var devauth TadoDevAuth
+	err = json.NewDecoder(resp.Body).Decode(&devauth)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	fmt.Println(devauth.VerificationUrlComplete)
 	fmt.Println("press enter to continue")
 	fmt.Scanln()
 
-	token, err := t.config.DeviceAccessToken(ctx, response)
+	resp, err = t.client.PostForm("https://login.tado.com/oauth2/token",
+		url.Values{
+			"client_id":   {"1bb50063-6b0c-4d11-bd99-387f4a91cc46"},
+			"device_code": {devauth.DeviceCode},
+			"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
+		})
 	if err != nil {
 		return err
 	}
+	err = json.NewDecoder(resp.Body).Decode(&t.token)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	t.token.Expiry = time.Now().Add(time.Second * time.Duration(t.token.ExpiresIn))
 
-	t.client = t.config.Client(ctx, token)
+	return nil
+}
+
+func (t *Tado) RefreshToken() error {
+	resp, err := t.client.PostForm("https://login.tado.com/oauth2/token",
+		url.Values{
+			"client_id":     {"1bb50063-6b0c-4d11-bd99-387f4a91cc46"},
+			"grant_type":    {"refresh_token"},
+			"refresh_token": {t.token.RefreshToken},
+		})
+	if err != nil {
+		return err
+	}
+	var token TadoToken
+	err = json.NewDecoder(resp.Body).Decode(&token)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	t.token = token
+
+	t.token.Expiry = time.Now().Add(time.Second * time.Duration(t.token.ExpiresIn))
+
 	return nil
 }
 
 func (t *Tado) Metrics(w http.ResponseWriter, req *http.Request) {
-	if t.client == nil {
-		return
+	if time.Now().After(t.token.Expiry) {
+		t.RefreshToken()
 	}
 
 	if len(t.homeids) == 0 {
-		resp, err := t.client.Get("https://my.tado.com/api/v2/me")
+		req, err := http.NewRequest(http.MethodGet, "https://my.tado.com/api/v2/me", nil)
+		if err != nil {
+			panic(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+t.token.AccessToken)
+		resp, err := t.client.Do(req)
 		if err != nil {
 			panic(err)
 		}
@@ -106,7 +175,12 @@ func (t *Tado) Metrics(w http.ResponseWriter, req *http.Request) {
 
 	for _, homeid := range t.homeids {
 		var rooms []TadoRoom
-		resp, err := t.client.Get(fmt.Sprintf("https://hops.tado.com/homes/%d/rooms?ngsw-bypass=true", homeid))
+		req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("https://hops.tado.com/homes/%d/rooms?ngsw-bypass=true", homeid), nil)
+		if err != nil {
+			panic(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+t.token.AccessToken)
+		resp, err := t.client.Do(req)
 		if err != nil {
 			panic(err)
 		}
@@ -131,18 +205,11 @@ func (t *Tado) Metrics(w http.ResponseWriter, req *http.Request) {
 }
 
 func main() {
-	t := Tado{
-		config: &oauth2.Config{
-			ClientID: "1bb50063-6b0c-4d11-bd99-387f4a91cc46",
-			Scopes:   []string{"offline_access"},
-			Endpoint: oauth2.Endpoint{
-				DeviceAuthURL: "https://login.tado.com/oauth2/device_authorize",
-				TokenURL:      "https://login.tado.com/oauth2/token",
-			},
-		},
+	t := NewTado()
+	err := t.Authenticate()
+	if err != nil {
+		panic(err)
 	}
-
-	t.Authenticate()
 	fmt.Println("Listening on http://127.0.0.1:8005/metrics")
 	http.HandleFunc("/metrics", t.Metrics)
 	log.Fatal(http.ListenAndServe(":8005", nil))
