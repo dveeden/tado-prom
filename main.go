@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"slices"
@@ -116,7 +117,7 @@ func (t *Tado) Authenticate() error {
 		return err
 	}
 	resp.Body.Close()
-	t.token.Expiry = time.Now().Add(time.Second * time.Duration(t.token.ExpiresIn))
+	t.token.Expiry = time.Now().Add(time.Second * time.Duration(t.token.ExpiresIn-30))
 
 	return nil
 }
@@ -139,15 +140,17 @@ func (t *Tado) RefreshToken() error {
 	resp.Body.Close()
 	t.token = token
 
-	t.token.Expiry = time.Now().Add(time.Second * time.Duration(t.token.ExpiresIn))
+	t.token.Expiry = time.Now().Add(time.Second * time.Duration(t.token.ExpiresIn-30))
 
 	return nil
 }
 
 func (t *Tado) Metrics(w http.ResponseWriter, req *http.Request) {
 	if time.Now().After(t.token.Expiry) {
+		slog.Info("refreshing token")
 		t.RefreshToken()
 	}
+	slog.Info("token", slog.Time("expiry", t.token.Expiry))
 
 	if len(t.homeids) == 0 {
 		req, err := http.NewRequest(http.MethodGet, "https://my.tado.com/api/v2/me", nil)
@@ -175,7 +178,10 @@ func (t *Tado) Metrics(w http.ResponseWriter, req *http.Request) {
 
 	for _, homeid := range t.homeids {
 		var rooms []TadoRoom
-		req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("https://hops.tado.com/homes/%d/rooms?ngsw-bypass=true", homeid), nil)
+		req, err := http.NewRequest(
+			http.MethodGet,
+			fmt.Sprintf("https://hops.tado.com/homes/%d/rooms?ngsw-bypass=true", homeid),
+			nil)
 		if err != nil {
 			panic(err)
 		}
@@ -185,6 +191,10 @@ func (t *Tado) Metrics(w http.ResponseWriter, req *http.Request) {
 			panic(err)
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+			body, _ := io.ReadAll(resp.Body)
+			slog.Warn("failed to get room info",
+				slog.Int("StatusCode", resp.StatusCode),
+				slog.String("body", string(body)))
 			panic(fmt.Errorf("unexpected status code %d", resp.StatusCode))
 		}
 		err = json.NewDecoder(resp.Body).Decode(&rooms)
