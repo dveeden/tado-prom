@@ -150,22 +150,24 @@ func (t *Tado) Metrics(w http.ResponseWriter, req *http.Request) {
 		slog.Info("refreshing token")
 		t.RefreshToken()
 	}
-	slog.Info("token", slog.Time("expiry", t.token.Expiry))
 
 	if len(t.homeids) == 0 {
 		req, err := http.NewRequest(http.MethodGet, "https://my.tado.com/api/v2/me", nil)
 		if err != nil {
-			panic(err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 		req.Header.Set("Authorization", "Bearer "+t.token.AccessToken)
 		resp, err := t.client.Do(req)
 		if err != nil {
-			panic(err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 		var me TadoMe
 		err = json.NewDecoder(resp.Body).Decode(&me)
 		if err != nil {
-			panic(err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 		for _, home := range me.Homes {
 			if slices.Contains(t.homeids, home.Id) {
@@ -183,23 +185,28 @@ func (t *Tado) Metrics(w http.ResponseWriter, req *http.Request) {
 			fmt.Sprintf("https://hops.tado.com/homes/%d/rooms?ngsw-bypass=true", homeid),
 			nil)
 		if err != nil {
-			panic(err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 		req.Header.Set("Authorization", "Bearer "+t.token.AccessToken)
 		resp, err := t.client.Do(req)
 		if err != nil {
-			panic(err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
+		io.WriteString(w, fmt.Sprintf("tado_service_status_code %d\n", resp.StatusCode))
 		if resp.StatusCode < 200 || resp.StatusCode >= 400 {
 			body, _ := io.ReadAll(resp.Body)
 			slog.Warn("failed to get room info",
 				slog.Int("StatusCode", resp.StatusCode),
 				slog.String("body", string(body)))
-			panic(fmt.Errorf("unexpected status code %d", resp.StatusCode))
+			slog.Error("unexpected status code from service", "status_code", resp.StatusCode)
+			return
 		}
 		err = json.NewDecoder(resp.Body).Decode(&rooms)
 		if err != nil {
-			panic(err)
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 		for _, room := range rooms {
 			io.WriteString(w, fmt.Sprintf("tado_temperature{room=\"%s\",home=\"%d\"} %f\n",
