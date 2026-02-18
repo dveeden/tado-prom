@@ -9,8 +9,34 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 )
+
+type TadoRateLimit struct {
+	LimitType string
+	Remaining int
+	Refill    int
+}
+
+func rateLimiteFromHeader(h string) TadoRateLimit {
+	parts := strings.Split(h, ";")
+	t := TadoRateLimit{}
+	t.LimitType = strings.Trim(parts[0], "\"") // "ratelimit"
+	for _, p := range parts[1:] {
+		pparts := strings.SplitN(p, "=", 2)
+		k := pparts[0]
+		v := pparts[1]
+		switch k {
+		case "r":
+			t.Remaining, _ = strconv.Atoi(v)
+		case "t":
+			t.Refill, _ = strconv.Atoi(v)
+		}
+	}
+	return t
+}
 
 type TadoDevAuth struct {
 	DeviceCode              string `json:"device_code"`
@@ -195,6 +221,10 @@ func (t *Tado) Metrics(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		io.WriteString(w, fmt.Sprintf("tado_service_status_code %d\n", resp.StatusCode))
+
+		rateLimitInfo := rateLimiteFromHeader(resp.Header.Get("ratelimit"))
+		io.WriteString(w, fmt.Sprintf("tado_service_ratelimit{type=\"perday\",kind=\"remain\"} %d\n", rateLimitInfo.Remaining))
+		io.WriteString(w, fmt.Sprintf("tado_service_ratelimit{type=\"perday\",kind=\"refill\"} %d\n", rateLimitInfo.Refill))
 		if resp.StatusCode < 200 || resp.StatusCode >= 400 {
 			body, _ := io.ReadAll(resp.Body)
 			slog.Warn("failed to get room info",
