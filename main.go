@@ -221,6 +221,7 @@ func (t *Tado) Metrics(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		io.WriteString(w, fmt.Sprintf("tado_service_status_code %d\n", resp.StatusCode))
+		io.WriteString(w, fmt.Sprintf("tado_service_status{status=\"%s\"} 1\n", resp.Status))
 
 		rateLimitInfo := rateLimiteFromHeader(resp.Header.Get("ratelimit"))
 		io.WriteString(w, fmt.Sprintf("tado_service_ratelimit{type=\"perday\",kind=\"remain\"} %d\n", rateLimitInfo.Remaining))
